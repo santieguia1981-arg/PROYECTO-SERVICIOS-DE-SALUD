@@ -1,8 +1,12 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { get, list, put } from '@vercel/blob';
+import { del, get, list, put } from '@vercel/blob';
 
 const accessPrefix = 'customer-service/operators/';
 const messagePrefix = 'customer-service/web/';
+const sessionPrefix = 'customer-service/browser-sessions/';
+const cookieName = '__Host-cs_inbox';
+const sessionDays = 30;
+const sessionSeconds = sessionDays * 86400;
 const hash = value => createHash('sha256').update(value).digest('hex');
 const authError = { error: 'El acceso no es válido o fue retirado.' };
 
@@ -34,6 +38,55 @@ function save(pathname, data, options = {}) {
   return put(pathname, JSON.stringify(data), {
     access: 'private', addRandomSuffix: false, contentType: 'application/json', ...options
   });
+}
+
+function browserSessionPath(req) {
+  const cookie = (req.headers.cookie || '').split(';').map(value => value.trim())
+    .find(value => value.startsWith(cookieName + '='));
+  const token = cookie?.slice(cookieName.length + 1);
+  return token && /^[A-Za-z0-9_-]{43}$/.test(token) ? sessionPrefix + hash(token) + '.json' : null;
+}
+
+function setSessionCookie(res, token, maxAge) {
+  res.setHeader('Set-Cookie', `${cookieName}=${token}; Max-Age=${maxAge}; Path=/; Secure; HttpOnly; SameSite=None; Partitioned`);
+}
+
+async function getOperator(req) {
+  let operatorId;
+  if (req.headers.authorization !== undefined) {
+    const bearer = /^Bearer (cs_[A-Za-z0-9_-]{43})$/.exec(req.headers.authorization);
+    if (!bearer) return null;
+    operatorId = hash(bearer[1]);
+  } else {
+    const path = browserSessionPath(req);
+    const session = path && await readRecord(path);
+    if (!session || !(session.expiresAt > Date.now())) return null;
+    operatorId = session.operatorId;
+  }
+  const operator = await readRecord(accessPrefix + operatorId + '.json');
+  return operator?.active ? operator : null;
+}
+
+async function changeBrowserSession(req, res) {
+  if (!['POST', 'DELETE'].includes(req.method)) return res.status(405).end();
+  if (req.headers.origin !== 'https://' + req.headers.host ||
+      req.headers['content-type']?.split(';')[0] !== 'application/json') return res.status(403).end();
+  const previousPath = browserSessionPath(req);
+  if (req.method === 'DELETE') {
+    if (previousPath) await del(previousPath);
+    setSessionCookie(res, '', 0);
+    return res.status(204).end();
+  }
+  if (!req.headers.authorization) return res.status(401).json(authError);
+  const operator = await getOperator(req);
+  if (!operator) return res.status(401).json(authError);
+  const token = randomBytes(32).toString('base64url');
+  await save(sessionPrefix + hash(token) + '.json', {
+    operatorId: operator.id, expiresAt: Date.now() + sessionSeconds * 1000
+  }, { ttlDays: sessionDays });
+  if (previousPath) await del(previousPath);
+  setSessionCookie(res, token, sessionSeconds);
+  return res.status(204).end();
 }
 
 export default async function handler(req, res) {
@@ -69,11 +122,10 @@ export default async function handler(req, res) {
       }
       return res.status(405).end();
     }
+    if (req.query.mode === 'browser') return await changeBrowserSession(req, res);
     if (req.method !== 'GET') return res.status(405).end();
-    const bearer = /^Bearer (cs_[A-Za-z0-9_-]{43})$/.exec(req.headers.authorization || '');
-    if (!bearer) return res.status(401).json(authError);
-    const operator = await readRecord(accessPrefix + hash(bearer[1]) + '.json');
-    if (!operator?.active) return res.status(401).json(authError);
+    const operator = await getOperator(req);
+    if (!operator) return res.status(401).json(authError);
     const items = await records(await allFiles(messagePrefix));
     const messages = items.flatMap(item => item.message ? [item.message] : []);
     messages.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
