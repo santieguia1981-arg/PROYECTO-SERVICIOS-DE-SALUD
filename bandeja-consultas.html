@@ -6,6 +6,8 @@
   <title>Consultas del catálogo · Customer Service</title>
   <style>
     *{box-sizing:border-box}body{margin:0;font:15px/1.5 Arial,sans-serif;color:#183137;background:#f5f9f9}main{max-width:960px;margin:auto;padding:22px}h1{margin:0;font-size:24px}h2{font-size:18px;margin:0}p{margin:.4rem 0 .8rem}section,article{background:white;border:1px solid #cee1df;border-radius:12px;padding:18px;margin:12px 0}label{display:block;margin:8px 0;font-weight:600}input{width:min(100%,440px);padding:10px;border:1px solid #758e91;border-radius:6px;font-size:16px}button{background:#116458;border:0;color:white;padding:10px 15px;margin:5px 5px 5px 0;border-radius:6px;font-weight:600;cursor:pointer}button:disabled{opacity:.6;cursor:wait}.quiet{background:#eef4f3;color:#204b47}.row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px}.detail{white-space:pre-wrap;overflow-wrap:anywhere}.meta{color:#48666a;font-size:14px}.ticket{color:#106457;overflow-wrap:anywhere;font-size:13px}#feedback:empty{display:none}ul{padding-left:20px}li{margin:6px 0}[hidden]{display:none!important}
+    .remember-option{display:flex;align-items:center;gap:8px;font-weight:400}
+    .remember-option input{width:auto}
   </style>
   <script type="module" src="/bandeja-consultas.js"></script>
 </head>
@@ -16,11 +18,12 @@
     <form id="loginForm">
       <label for="accessKey">Clave de acceso personal</label>
       <input id="accessKey" type="password" autocomplete="current-password" required>
+      <label class="remember-option"><input id="remember" type="checkbox"> Recordarme en este navegador por 30 días</label>
       <button>Ver mis consultas</button>
     </form>
   </section>
   <section id="inbox" hidden>
-    <div class="row"><h2 id="count"></h2><div><button id="refresh" class="quiet">Actualizar</button><button id="logout" class="quiet">Cerrar sesión</button></div></div>
+    <div class="row"><h2 id="count"></h2><div><button id="rememberHere" class="quiet" hidden>Recordar este navegador por 30 días</button><button id="refresh" class="quiet">Actualizar</button><button id="logout" class="quiet">Cerrar sesión</button></div></div>
     <div id="messages"></div>
   </section>
   <section id="admin" hidden>

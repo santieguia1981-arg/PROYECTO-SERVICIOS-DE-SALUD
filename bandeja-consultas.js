@@ -3,17 +3,29 @@ const adminMode = new URLSearchParams(location.search).get('administrar') === '1
 const path = '/api/customer-service/access';
 const sessionKey = 'acceso-consultas-catalogo';
 let accessKey = '';
-let busy = false;
+let reading = false;
+let changing = false;
+let version = 0;
+let signedIn = false;
 try { accessKey = sessionStorage.getItem(sessionKey) || ''; } catch {}
 
 function message(text) { $('feedback').textContent = text; }
+function setTabKey(key) {
+  accessKey = key;
+  try {
+    if (key) sessionStorage.setItem(sessionKey, key);
+    else sessionStorage.removeItem(sessionKey);
+  } catch {}
+}
 function clearSession() {
-  accessKey = '';
-  try { sessionStorage.removeItem(sessionKey); } catch {}
+  signedIn = false;
+  setTabKey('');
   $('messages').replaceChildren();
   $('count').textContent = '';
   $('inbox').hidden = true;
   $('login').hidden = false;
+  $('accessKey').value = '';
+  $('remember').checked = false;
 }
 function element(tag, text, cls) {
   const node = document.createElement(tag);
@@ -33,25 +45,87 @@ function renderMessages(items) {
   });
   $('messages').replaceChildren(...cards);
 }
+async function readInbox(key) {
+  const headers = key ? { Authorization: 'Bearer ' + key } : {};
+  const response = await fetch(path, { headers, cache: 'no-store' });
+  if (response.status === 401) return null;
+  if (!response.ok) throw Error();
+  return response.json();
+}
+
+function showInbox(data) {
+  signedIn = true;
+  $('login').hidden = true;
+  $('inbox').hidden = false;
+  $('accessKey').value = '';
+  $('rememberHere').hidden = !accessKey;
+  renderMessages(data.messages);
+  message('Sesión de ' + data.operator);
+}
+
 async function refresh() {
-  if (busy || !accessKey) return;
-  busy = true;
-  const currentKey = accessKey;
+  if (reading || changing) return;
+  reading = true;
+  const started = version;
   try {
-    const response = await fetch(path, { headers: { Authorization: 'Bearer ' + currentKey }, cache: 'no-store' });
-    if (currentKey !== accessKey) return;
-    if (response.status === 401) { clearSession(); message('La clave no es válida o fue retirada.'); return; }
+    const data = await readInbox(accessKey);
+    if (started !== version) return;
+    if (data) return showInbox(data);
+    const hadSession = signedIn || Boolean(accessKey);
+    clearSession();
+    message(hadSession ? 'El acceso venció o fue retirado. Ingresá con una clave vigente.' : '');
+  } catch {
+    if (started === version) {
+      if (!signedIn) $('login').hidden = false;
+      message('No se pudo actualizar la bandeja. Volvé a intentar.');
+    }
+  } finally { reading = false; }
+}
+
+function changeSession(method, key) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (key) headers.Authorization = 'Bearer ' + key;
+  return fetch(path + '?mode=browser', { method, headers, body: '{}', cache: 'no-store' });
+}
+
+async function login(key, remember) {
+  if (changing || !key) return;
+  changing = true;
+  version++;
+  try {
+    let data;
+    if (remember) {
+      const res = await changeSession('POST', key);
+      if (res.status === 401) { clearSession(); message('La clave no es válida o fue retirada.'); return; }
+      if (!res.ok) throw Error();
+      data = await readInbox('');
+      if (data) {
+        setTabKey('');
+        showInbox(data);
+        message('Se recordará tu acceso en este navegador por 30 días.');
+        return;
+      }
+    }
+    data = await readInbox(key);
+    if (!data) { clearSession(); message('La clave no es válida o fue retirada.'); return; }
+    setTabKey(key);
+    showInbox(data);
+    if (remember) message('El navegador bloqueó la sesión guardada. Tenés acceso en esta pestaña.');
+  } catch { message('No se pudo iniciar o guardar la sesión. Volvé a intentar.'); }
+  finally { changing = false; }
+}
+
+async function logout() {
+  if (changing) return;
+  changing = true;
+  version++;
+  try {
+    const response = await changeSession('DELETE');
     if (!response.ok) throw Error();
-    const data = await response.json();
-    if (currentKey !== accessKey) return;
-    try { sessionStorage.setItem(sessionKey, accessKey); } catch {}
-    $('accessKey').value = '';
-    $('login').hidden = true;
-    $('inbox').hidden = false;
-    renderMessages(data.messages);
-    message('Sesión de ' + data.operator);
-  } catch { message('No se pudo actualizar la bandeja. Volvé a intentar.'); }
-  finally { busy = false; }
+    clearSession();
+    message('Sesión cerrada en este navegador.');
+  } catch { message('No se pudo cerrar la sesión. Volvé a intentar.'); }
+  finally { changing = false; }
 }
 async function adminRequest(method, body) {
   const options = { method, cache: 'no-store' };
@@ -90,14 +164,17 @@ $('copy').onclick = async () => {
   try { await navigator.clipboard.writeText($('newKey').value); message('Clave copiada.'); }
   catch { $('newKey').select(); message('Usá Copiar para guardar la clave.'); }
 };
-$('loginForm').onsubmit = event => { event.preventDefault(); accessKey = $('accessKey').value.trim(); refresh(); };
-$('logout').onclick = () => { clearSession(); message('Sesión cerrada.'); };
+$('loginForm').onsubmit = event => { event.preventDefault(); login($('accessKey').value.trim(), $('remember').checked); };
+$('rememberHere').onclick = () => login(accessKey, true);
+$('logout').onclick = logout;
 $('refresh').onclick = refresh;
 if (adminMode) {
   $('title').textContent = 'Accesos a Customer Service';
   loadAdmin().catch(() => message('Abrí el enlace de administración privado desde tu cuenta de Vercel.'));
 } else {
-  $('login').hidden = false;
-  if (accessKey) refresh();
-  setInterval(() => { if (!document.hidden && accessKey) refresh(); }, 20000);
+  message('Buscando una sesión autorizada…');
+  refresh();
+  setInterval(() => { if (!document.hidden && signedIn) refresh(); }, 20000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && signedIn) refresh(); });
+  window.addEventListener('pageshow', event => { if (event.persisted) refresh(); });
 }
