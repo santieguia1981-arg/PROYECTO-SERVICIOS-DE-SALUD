@@ -817,19 +817,19 @@
                 <form id="contactForm">
                     <div class="form-group">
                         <label for="nombre">Nombre y Apellido o Razón Social *</label>
-                        <input type="text" id="nombre" required placeholder="Ej: Dr. Roberto Gómez">
+                        <input type="text" id="nombre" maxlength="200" required placeholder="Ej: Dr. Roberto Gómez">
                     </div>
                     <div class="form-group">
                         <label for="email">Email *</label>
-                        <input type="email" id="email" required placeholder="ejemplo@institucion.com">
+                        <input type="email" id="email" maxlength="254" required placeholder="ejemplo@institucion.com">
                     </div>
                     <div class="form-group">
                         <label for="telefono">Teléfono</label>
-                        <input type="tel" id="telefono" placeholder="+54 11 1234 5678">
+                        <input type="tel" id="telefono" maxlength="80" placeholder="+54 11 1234 5678">
                     </div>
                     <div class="form-group">
                         <label for="consulta">Consulta *</label>
-                        <textarea id="consulta" rows="4" required placeholder="Describa los insumos o el lote requerido..."></textarea>
+                        <textarea id="consulta" rows="4" maxlength="12000" required placeholder="Describa los insumos o el lote requerido..."></textarea>
                     </div>
 
                     <!-- CONTENEDOR DE PRODUCTOS SELECCIONADOS -->
@@ -839,6 +839,7 @@
                     </div>
 
                     <button type="submit" class="btn-submit" id="btnSubmit">Enviar Consulta</button>
+                    <p id="contactStatus" role="status" aria-live="polite"></p>
                 </form>
             </div>
 
@@ -986,24 +987,63 @@
         const btnSubmit = document.getElementById('btnSubmit');
         const successToast = document.getElementById('successToast');
 
-        contactForm.addEventListener('submit', (e) => {
+        const contactStatus = document.getElementById('contactStatus');
+        const attemptKey = 'customer-service.pending-submission';
+        let pending = null;
+        try { pending = JSON.parse(sessionStorage.getItem(attemptKey)); } catch {}
+
+        function readInquiry() {
+            const products = [...document.querySelectorAll('.product-list li.selected')];
+            return {
+                contactName: document.getElementById('nombre').value.trim(),
+                email: document.getElementById('email').value.trim(),
+                phone: document.getElementById('telefono').value.trim(),
+                message: document.getElementById('consulta').value.trim(),
+                requestedProducts: products.map(item => item.innerText.trim()).join(', ')
+            };
+        }
+
+        contactForm.addEventListener('submit', async (e) => {
             e.preventDefault();
+            if (btnSubmit.disabled) return;
             btnSubmit.disabled = true;
             btnSubmit.innerHTML = 'Procesando... <i class="fa-solid fa-spinner fa-spin"></i>';
-
-            setTimeout(() => {
-                btnSubmit.disabled = false;
-                btnSubmit.innerHTML = 'Enviar Consulta';
-                contactForm.reset();
-                document.getElementById('quoteSummary').style.display = 'none';
-                document.querySelectorAll('.product-list li.selected').forEach(el => el.classList.remove('selected'));
-                
+            contactStatus.textContent = '';
+            try {
+                const inquiry = readInquiry();
+                const serialized = JSON.stringify(inquiry);
+                const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(serialized));
+                const hash = [...new Uint8Array(bytes)].map(n => n.toString(16).padStart(2, '0')).join('');
+                if (pending?.hash !== hash) pending = { hash, id: crypto.randomUUID() };
+                try { sessionStorage.setItem(attemptKey, JSON.stringify(pending)); } catch {}
+                const response = await fetch('/api/customer-service/webhook', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id: pending.id, ...inquiry }),
+                    redirect: 'error',
+                    signal: AbortSignal.timeout(20000)
+                });
+                const result = await response.json();
+                if (!response.ok || result.success !== true || !result.ticketNumber) {
+                    throw new Error(result.error || 'No pudimos confirmar la recepción. Volvé a intentar.');
+                }
+                pending = null;
+                try { sessionStorage.removeItem(attemptKey); } catch {}
+                if (JSON.stringify(readInquiry()) === serialized) {
+                    contactForm.reset();
+                    document.getElementById('quoteSummary').style.display = 'none';
+                    document.getElementById('selectedProductsContainer').replaceChildren();
+                    document.querySelectorAll('.product-list li.selected').forEach(el => el.classList.remove('selected'));
+                }
+                contactStatus.textContent = 'Consulta recibida. Tu comprobante es ' + result.ticketNumber;
                 successToast.classList.add('show');
-                
-                setTimeout(() => {
-                    successToast.classList.remove('show');
-                }, 4000);
-            }, 1200);
+                setTimeout(() => successToast.classList.remove('show'), 4000);
+            } catch (error) {
+                contactStatus.textContent = 'No pudimos confirmar el envío. Tus datos siguen en el formulario. Revisalos y volvé a intentar.';
+            } finally {
+                btnSubmit.disabled = false;
+                btnSubmit.textContent = 'Enviar Consulta';
+            }
         });
     </script>
 </body>
